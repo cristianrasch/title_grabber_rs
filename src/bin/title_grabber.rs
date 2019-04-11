@@ -94,18 +94,15 @@ fn main() {
     println!("{:?}", matches);
 
     let out_path = matches.value_of("output").unwrap_or(DEF_OUT_PATH);
-    // println!("Out path: {}", out_path);
 
     if let Some(files) = matches.values_of("files") {
         let files: Vec<&Path> = files.map(|f| f.as_ref()).collect();
-        println!("Files: {:?}", files);
 
         // let mut instance = TitleGrabber::new(files, out_path.as_ref());
         let mut instance = TitleGrabber::new(files);
 
         if let Some(debug) = matches.value_of("debug") {
             if TRUE_VALS.iter().any(|&true_val| debug == true_val) {
-                println!("Debug mode '{}' is turned on", debug);
                 instance.enable_debug_mode();
             }
         }
@@ -115,7 +112,6 @@ fn main() {
             .unwrap()
             .parse()
             .unwrap_or(CONN_TO);
-        println!("Conn timeout: {}", conn_to);
         instance.with_connect_timeout(conn_to);
 
         let read_to = matches
@@ -123,7 +119,6 @@ fn main() {
             .unwrap()
             .parse()
             .unwrap_or(READ_TO);
-        println!("Read timeout: {}", read_to);
         instance.with_read_timeout(read_to);
 
         let max_redirects = matches
@@ -131,7 +126,6 @@ fn main() {
             .unwrap()
             .parse()
             .unwrap_or(MAX_REDIRECTS);
-        println!("Max. redirects: {}", max_redirects);
         instance.with_max_redirects(max_redirects);
 
         let max_retries = matches
@@ -139,7 +133,6 @@ fn main() {
             .unwrap()
             .parse()
             .unwrap_or(MAX_RETRIES);
-        println!("Max. retries: {}", max_retries);
         instance.with_max_retries(max_retries);
 
         let max_threads: usize = matches
@@ -147,7 +140,6 @@ fn main() {
             .unwrap()
             .parse()
             .unwrap_or(num_cpus::get());
-        println!("Max. threads: {}", max_threads);
         instance.with_max_threads(max_threads);
 
         if let Some(err) = instance.write_csv_to(out_path.as_ref()).err() {

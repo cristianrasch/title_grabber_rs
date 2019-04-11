@@ -10,6 +10,10 @@ use std::time::Duration;
 #[macro_use]
 extern crate lazy_static;
 
+#[macro_use] extern crate log;
+
+use simplelog::*;
+
 use num_cpus;
 
 use regex::Regex;
@@ -41,6 +45,13 @@ pub struct TitleGrabber<'a> {
 impl<'a> TitleGrabber<'a> {
     // pub fn new(files: Vec<&'a Path>, out_path: &'a Path) -> TitleGrabber<'a> {
     pub fn new(files: Vec<&'a Path>) -> TitleGrabber<'a> {
+        let log_config = Config::default();
+        if let Ok(log_file) = File::create("title_grabber.log") {
+            WriteLogger::init(LevelFilter::Info, log_config, log_file).unwrap();
+        } else {
+            TermLogger::init(LevelFilter::Info, log_config).unwrap();
+        }
+
         Self {
             files,
             // out_path,
@@ -92,7 +103,7 @@ impl<'a> TitleGrabber<'a> {
             .build()?;
 
         for path in self.files.iter() {
-            println!("FILE: {}", path.display());
+            info!("FILE: {}", path.display());
 
             let file = File::open(path)?;
             let reader = BufReader::new(file);
@@ -102,32 +113,39 @@ impl<'a> TitleGrabber<'a> {
 
                 if let Some(url) = URL_RE.find(&line) {
                     let url = url.as_str();
-                    println!("URL: {}", url);
                     let mut retries = 0;
                     let mut res = http_client.get(url).send();
 
                     while res.is_err() && retries < self.max_retries {
-                        let err = res.err().unwrap();
-                        eprintln!("GET {} - [{} - {}]", url, err.status().unwrap(), err);
-                        // eprintln!("GET {} - [{}] - Retry: {}", url, err, retries);
+                        let err = res.as_ref().err().unwrap();
+                        retries += 1;
 
-                        if err.is_http() || err.is_timeout() || err.is_redirect() {
-                            retries += 1;
+                        let will_retry = (err.is_http() || err.is_timeout() || err.is_server_error()) && retries < self.max_retries;
+
+                        if will_retry {
+                            if let Some(status) = err.status() {
+                                warn!("GET {} [{}] - Retry: {}", url, status, retries);
+                            } else {
+                                warn!("GET {} [{}] - Retry: {}", url, err, retries);
+                            }
+
                             thread::sleep(Duration::from_secs(retries));
-
                             res = http_client.get(url).send();
                         } else {
                             break;
                         }
                     }
 
-                    // match res {
-                    //     Ok(resp) => println!("GET {} - [{}]", url, resp.status()),
-                    //     Err(err) => {
-                    //         eprintln!("GET {} - [{}]", url, err);
-                    //         // eprintln!("GET {} - [{} - {}]", url, err.status().unwrap(), err)
-                    //     }
-                    // };
+                    match res {
+                        Ok(resp) => info!("GET {} - [{}]", url, resp.status()),
+                        Err(err) => {
+                            if let Some(status) = err.status() {
+                                warn!("GET {} - [{}]", url, status);
+                            } else {
+                                warn!("GET {} - [{}]", url, err);
+                            }
+                        }
+                    };
                 }
             }
         }
