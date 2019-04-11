@@ -98,7 +98,6 @@ fn main() {
     if let Some(files) = matches.values_of("files") {
         let files: Vec<&Path> = files.map(|f| f.as_ref()).collect();
 
-        // let mut instance = TitleGrabber::new(files, out_path.as_ref());
         let mut instance = TitleGrabber::new(files);
 
         if let Some(debug) = matches.value_of("debug") {
