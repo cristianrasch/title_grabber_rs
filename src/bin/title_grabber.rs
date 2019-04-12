@@ -3,8 +3,6 @@ use std::process;
 
 use clap::{App, Arg};
 
-use num_cpus;
-
 #[macro_use]
 extern crate lazy_static;
 
@@ -47,7 +45,6 @@ fn main() {
                 .takes_value(true)
                 .env("CONNECT_TIMEOUT")
                 .default_value(&def_conn_to)
-                // .default_value(str::from_utf8(&[CONN_TO]).unwrap())
                 .help(&format!("HTTP connect timeout. Defaults to the value of the CONNECT_TIMEOUT env var or {}", CONN_TO)),
         )
         .arg(
@@ -91,20 +88,17 @@ fn main() {
         )
         .get_matches();
 
-    println!("{:?}", matches);
-
     let out_path = matches.value_of("output").unwrap_or(DEF_OUT_PATH);
 
     if let Some(files) = matches.values_of("files") {
         let files: Vec<&Path> = files.map(|f| f.as_ref()).collect();
 
-        let mut instance = TitleGrabber::new(files);
-
+        let mut debug_enabled = false;
         if let Some(debug) = matches.value_of("debug") {
-            if TRUE_VALS.iter().any(|&true_val| debug == true_val) {
-                instance.enable_debug_mode();
-            }
+            debug_enabled = TRUE_VALS.iter().any(|&true_val| debug == true_val);
         }
+
+        let mut instance = TitleGrabber::new(files, out_path.as_ref(), debug_enabled);
 
         let conn_to = matches
             .value_of("connect-timeout")
@@ -138,10 +132,10 @@ fn main() {
             .value_of("max-threads")
             .unwrap()
             .parse()
-            .unwrap_or(num_cpus::get());
+            .unwrap_or(*NUM_CPUS);
         instance.with_max_threads(max_threads);
 
-        if let Some(err) = instance.write_csv_to(out_path.as_ref()).err() {
+        if let Some(err) = instance.write_csv_to().err() {
             eprintln!("Error: {}", err.description());
         }
     } else {
