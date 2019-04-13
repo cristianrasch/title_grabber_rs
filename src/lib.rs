@@ -39,6 +39,12 @@ lazy_static! {
     static ref WHITESPACE_RE: Regex = Regex::new(r"\s{2,}").unwrap();
 }
 
+fn fix_whitespace(html: String) -> String {
+    WHITESPACE_RE
+        .replace_all(&NEW_LINE_RE.replace_all(html.trim(), " "), " ")
+        .into_owned()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct CsvRow {
     url: String,
@@ -55,7 +61,6 @@ pub struct TitleGrabber<'a> {
     max_redirects: usize,
     max_retries: u64,
     max_threads: usize,
-    processed_urls: HashMap<String, HashMap<&'static str, Option<String>>>,
 }
 
 impl<'a> TitleGrabber<'a> {
@@ -79,8 +84,6 @@ impl<'a> TitleGrabber<'a> {
             TermLogger::init(log_level, log_config).unwrap();
         }
 
-        let processed_urls = Self::urls_processed_on(output_path);
-
         Self {
             files,
             output_path,
@@ -89,7 +92,6 @@ impl<'a> TitleGrabber<'a> {
             max_redirects: MAX_REDIRECTS,
             max_retries: MAX_RETRIES,
             max_threads: *NUM_CPUS,
-            processed_urls,
         }
     }
 
@@ -118,13 +120,11 @@ impl<'a> TitleGrabber<'a> {
         self
     }
 
-    fn urls_processed_on(
-        output_path: &'a Path,
-    ) -> HashMap<String, HashMap<&'static str, Option<String>>> {
-        let mut processed_urls = HashMap::new();
+    fn processed_urls(&self) -> HashMap<String, HashMap<&'static str, Option<String>>> {
+        let mut res = HashMap::new();
 
-        if output_path.exists() {
-            if let Some(mut reader) = csv::Reader::from_path(output_path).ok() {
+        if self.output_path.exists() {
+            if let Some(mut reader) = csv::Reader::from_path(self.output_path).ok() {
                 for row in reader.deserialize() {
                     if row.is_err() {
                         continue;
@@ -146,19 +146,13 @@ impl<'a> TitleGrabber<'a> {
                         // .cloned()
                         // .collect();
 
-                        processed_urls.insert(r.url, url_data);
+                        res.insert(r.url, url_data);
                     }
                 }
             }
         }
 
-        processed_urls
-    }
-
-    fn fix_whitespace(html: String) -> String {
-        WHITESPACE_RE
-            .replace_all(&NEW_LINE_RE.replace_all(html.trim(), " "), " ")
-            .into_owned()
+        res
     }
 
     fn build_http_client(&self) -> reqwest::Client {
@@ -218,20 +212,18 @@ impl<'a> TitleGrabber<'a> {
                         let page_tit_sel = Selector::parse("title").unwrap();
                         let mut page_tit = None;
                         if let Some(page_tit_el) = doc.select(&page_tit_sel).next() {
-                            page_tit.replace(Self::fix_whitespace(page_tit_el.inner_html()));
+                            page_tit.replace(fix_whitespace(page_tit_el.inner_html()));
                         }
 
                         let mut art_tit_sel = Selector::parse("article h1").unwrap();
                         let mut art_tit = None;
                         if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
-                            art_tit.replace(Self::fix_whitespace(itertools::join(
-                                art_tit_el.text(),
-                                " ",
-                            )));
+                            art_tit
+                                .replace(fix_whitespace(itertools::join(art_tit_el.text(), " ")));
                         } else {
                             art_tit_sel = Selector::parse("h1").unwrap();
                             if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
-                                art_tit.replace(Self::fix_whitespace(itertools::join(
+                                art_tit.replace(fix_whitespace(itertools::join(
                                     art_tit_el.text(),
                                     " ",
                                 )));
@@ -260,6 +252,7 @@ impl<'a> TitleGrabber<'a> {
     }
 
     pub fn write_csv_to(&self) -> Result<(), Box<Error>> {
+        let processed_urls = self.processed_urls();
         let http_client = Arc::new(self.build_http_client());
         let mut writer = csv::Writer::from_path(self.output_path)?;
         let mut pool = Pool::new(self.max_threads as u32);
@@ -278,7 +271,7 @@ impl<'a> TitleGrabber<'a> {
                             if let Some(url) = URL_RE.find(&line) {
                                 let url = url.as_str();
 
-                                if let Some(r) = self.processed_urls.get(url) {
+                                if let Some(r) = processed_urls.get(url) {
                                     let res = writer.serialize(CsvRow {
                                         url: url.to_owned(),
                                         end_url: r.get(END_URL_HEAD).cloned().unwrap().unwrap(),
