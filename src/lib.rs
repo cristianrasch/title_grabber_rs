@@ -3,6 +3,8 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -17,6 +19,7 @@ use regex::Regex;
 use reqwest;
 #[macro_use]
 extern crate serde_derive;
+use scoped_threadpool::Pool;
 use scraper::{Html, Selector};
 use simplelog::*;
 
@@ -52,7 +55,7 @@ pub struct TitleGrabber<'a> {
     max_redirects: usize,
     max_retries: u64,
     max_threads: usize,
-    processed_urls: HashMap<String, HashMap<&'static str, String>>,
+    processed_urls: HashMap<String, HashMap<&'static str, Option<String>>>,
 }
 
 impl<'a> TitleGrabber<'a> {
@@ -114,7 +117,7 @@ impl<'a> TitleGrabber<'a> {
 
     fn read_already_processed_urls(
         out_path: &'a Path,
-    ) -> HashMap<String, HashMap<&'static str, String>> {
+    ) -> HashMap<String, HashMap<&'static str, Option<String>>> {
         let mut processed_urls = HashMap::new();
 
         if out_path.exists() {
@@ -127,9 +130,9 @@ impl<'a> TitleGrabber<'a> {
                     let r: CsvRow = row.unwrap();
                     if r.page_title.is_some() || r.article_title.is_some() {
                         let val = [
-                            (END_URL_HEAD, r.end_url),
-                            (PAGE_TIT_HEAD, r.page_title.unwrap_or_default()),
-                            (ART_TIT_HEAD, r.article_title.unwrap_or_default()),
+                            (END_URL_HEAD, Some(r.end_url)),
+                            (PAGE_TIT_HEAD, r.page_title),
+                            (ART_TIT_HEAD, r.article_title),
                         ]
                         .iter()
                         .cloned()
@@ -159,115 +162,150 @@ impl<'a> TitleGrabber<'a> {
             .unwrap()
     }
 
-    pub fn write_csv_to(&self) -> Result<(), Box<Error>> {
-        let http_client = self.build_http_client();
+    fn scrape_url(
+        &self,
+        url: String,
+        http_client: Arc<reqwest::Client>,
+        tx: mpsc::Sender<Option<CsvRow>>,
+    ) {
+        let mut retries = 0;
+        let mut res = http_client.get(&url).send();
 
-        for path in self.files.iter() {
-            debug!("FILE: {}", path.display());
+        while let Some(err) = res.as_ref().err() {
+            if retries >= self.max_retries {
+                break;
+            }
 
-            let file = File::open(path)?;
-            let reader = BufReader::new(file);
-            let mut writer = csv::Writer::from_path(self.out_path)?;
+            retries += 1;
 
-            for line in reader.lines() {
-                let line = line?;
+            let will_retry = (err.is_http() || err.is_timeout() || err.is_server_error())
+                && retries < self.max_retries;
 
-                if let Some(url) = URL_RE.find(&line) {
-                    let url = url.as_str();
+            if will_retry {
+                if let Some(status) = err.status() {
+                    warn!("GET {} [code: {}] - Retry: {}", url, status, retries);
+                } else {
+                    warn!("GET {} [err: {}] - Retry: {}", url, err, retries);
+                }
 
-                    if let Some(map) = self.processed_urls.get(url) {
-                        writer.serialize(CsvRow {
-                            url: url.to_owned(),
-                            end_url: map.get(END_URL_HEAD).cloned().unwrap(),
-                            page_title: map.get(PAGE_TIT_HEAD).cloned(),
-                            article_title: map.get(ART_TIT_HEAD).cloned(),
-                        })?;
-                    } else {
-                        let mut retries = 0;
-                        let mut res = http_client.get(url).send();
+                thread::sleep(Duration::from_secs(retries));
+                res = http_client.get(&url).send();
+            } else {
+                break;
+            }
+        }
 
-                        while let Some(err) = res.as_ref().err() {
-                            if retries < self.max_retries {
-                                break;
-                            }
+        let mut ret = None;
+        match res {
+            Ok(resp) => {
+                info!("GET {} - {}", url, resp.status());
+                let res = resp.error_for_status();
 
-                            retries += 1;
+                if let Some(mut resp) = res.ok() {
+                    if let Some(html) = resp.text().ok() {
+                        let end_url = resp.url().as_str();
+                        debug!("GET {} - {} bytes", end_url, html.len());
 
-                            let will_retry =
-                                (err.is_http() || err.is_timeout() || err.is_server_error())
-                                    && retries < self.max_retries;
+                        let doc = Html::parse_document(&html);
+                        let page_tit_sel = Selector::parse("title").unwrap();
+                        let mut page_tit = None;
+                        if let Some(page_tit_el) = doc.select(&page_tit_sel).next() {
+                            page_tit.replace(Self::fix_whitespace(page_tit_el.inner_html()));
+                        }
 
-                            if will_retry {
-                                if let Some(status) = err.status() {
-                                    warn!("GET {} [code: {}] - Retry: {}", url, status, retries);
-                                } else {
-                                    warn!("GET {} [err: {}] - Retry: {}", url, err, retries);
-                                }
-
-                                thread::sleep(Duration::from_secs(retries));
-                                res = http_client.get(url).send();
-                            } else {
-                                break;
+                        let mut art_tit_sel = Selector::parse("article h1").unwrap();
+                        let mut art_tit = None;
+                        if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
+                            art_tit.replace(Self::fix_whitespace(itertools::join(
+                                art_tit_el.text(),
+                                " ",
+                            )));
+                        } else {
+                            art_tit_sel = Selector::parse("h1").unwrap();
+                            if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
+                                art_tit.replace(Self::fix_whitespace(itertools::join(
+                                    art_tit_el.text(),
+                                    " ",
+                                )));
                             }
                         }
 
-                        match res {
-                            Ok(resp) => {
-                                info!("GET {} - [code: {}]", url, resp.status());
-                                let res = resp.error_for_status();
-
-                                if let Some(mut resp) = res.ok() {
-                                    if let Some(html) = resp.text().ok() {
-                                        let end_url = resp.url().as_str();
-                                        debug!("GET {} - Size: {} bytes", end_url, html.len());
-
-                                        let doc = Html::parse_document(&html);
-                                        let page_tit_sel = Selector::parse("title").unwrap();
-                                        let mut page_tit = None;
-                                        if let Some(page_tit_el) = doc.select(&page_tit_sel).next()
-                                        {
-                                            page_tit.replace(Self::fix_whitespace(
-                                                page_tit_el.inner_html(),
-                                            ));
-                                        }
-
-                                        let mut art_tit_sel =
-                                            Selector::parse("article h1").unwrap();
-                                        let mut art_tit = None;
-                                        if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
-                                            art_tit.replace(Self::fix_whitespace(itertools::join(
-                                                art_tit_el.text(),
-                                                " ",
-                                            )));
-                                        } else {
-                                            art_tit_sel = Selector::parse("h1").unwrap();
-                                            if let Some(art_tit_el) =
-                                                doc.select(&art_tit_sel).next()
-                                            {
-                                                art_tit.replace(Self::fix_whitespace(
-                                                    itertools::join(art_tit_el.text(), " "),
-                                                ));
-                                            }
-                                        }
-
-                                        writer.serialize(CsvRow {
-                                            url: url.to_owned(),
-                                            end_url: end_url.to_owned(),
-                                            page_title: page_tit,
-                                            article_title: art_tit,
-                                        })?;
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                if let Some(status) = err.status() {
-                                    error!("GET {} [code: {}] - Retry: {}", url, status, retries);
-                                } else {
-                                    error!("GET {} [err: {}] - Retry: {}", url, err, retries);
-                                }
-                            }
-                        };
+                        let _ = ret.replace(CsvRow {
+                            url: url,
+                            end_url: end_url.to_owned(),
+                            page_title: page_tit,
+                            article_title: art_tit,
+                        });
                     }
+                }
+            }
+            Err(err) => {
+                if let Some(status) = err.status() {
+                    error!("GET {} {} - Retry: {}", url, status, retries);
+                } else {
+                    error!("GET {} Err: {} - Retry: {}", url, err, retries);
+                }
+            }
+        };
+
+        let _ = tx.send(ret);
+    }
+
+    pub fn write_csv_to(&self) -> Result<(), Box<Error>> {
+        let http_client = Arc::new(self.build_http_client());
+        let mut writer = csv::Writer::from_path(self.out_path)?;
+        let mut pool = Pool::new(self.max_threads as u32);
+        let work_queue = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel();
+
+        pool.scoped(|scoped| {
+            for path in self.files.iter() {
+                debug!("FILE: {}", path.display());
+
+                if let Some(file) = File::open(path).ok() {
+                    let reader = BufReader::new(file);
+
+                    for line in reader.lines() {
+                        if let Some(line) = line.ok() {
+                            if let Some(url) = URL_RE.find(&line) {
+                                let url = url.as_str();
+
+                                if let Some(r) = self.processed_urls.get(url) {
+                                    let res = writer.serialize(CsvRow {
+                                        url: url.to_owned(),
+                                        end_url: r.get(END_URL_HEAD).cloned().unwrap().unwrap(),
+                                        page_title: r.get(PAGE_TIT_HEAD).cloned().unwrap(),
+                                        article_title: r.get(ART_TIT_HEAD).cloned().unwrap(),
+                                    });
+
+                                    if let Some(_) = res.err() {
+                                        error!(
+                                            "Failed to reuse data for previously scraped URL: {}",
+                                            url
+                                        );
+                                    }
+                                } else {
+                                    let url = url.to_owned();
+                                    let http_client = http_client.clone();
+                                    let tx = tx.clone();
+                                    let work_queue = work_queue.clone();
+
+                                    scoped.execute(move || {
+                                        self.scrape_url(url, http_client, tx);
+                                        work_queue.fetch_add(1, Ordering::SeqCst);
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        for _ in 0..work_queue.load(Ordering::Relaxed) {
+            if let Some(res) = rx.recv().ok() {
+                if let Some(row) = res {
+                    writer.serialize(row)?;
                 }
             }
         }
