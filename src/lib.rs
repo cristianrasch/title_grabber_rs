@@ -49,7 +49,7 @@ struct CsvRow {
 
 pub struct TitleGrabber<'a> {
     files: Vec<&'a Path>,
-    out_path: &'a Path,
+    output_path: &'a Path,
     connect_timeout: u64,
     read_timeout: u64,
     max_redirects: usize,
@@ -61,10 +61,13 @@ pub struct TitleGrabber<'a> {
 impl<'a> TitleGrabber<'a> {
     pub fn new(
         files: Vec<&'a Path>,
-        out_path: &'a Path,
+        output_path: &'a Path,
         debugging_enabled: bool,
     ) -> TitleGrabber<'a> {
-        let log_config = Config::default();
+        let log_config = Config {
+            time_format: Some("%F %T"),
+            ..Config::default()
+        };
         let log_level = if debugging_enabled {
             LevelFilter::Debug
         } else {
@@ -76,11 +79,11 @@ impl<'a> TitleGrabber<'a> {
             TermLogger::init(log_level, log_config).unwrap();
         }
 
-        let processed_urls = Self::read_already_processed_urls(out_path);
+        let processed_urls = Self::urls_processed_on(output_path);
 
         Self {
             files,
-            out_path,
+            output_path,
             connect_timeout: CONN_TO,
             read_timeout: READ_TO,
             max_redirects: MAX_REDIRECTS,
@@ -115,13 +118,13 @@ impl<'a> TitleGrabber<'a> {
         self
     }
 
-    fn read_already_processed_urls(
-        out_path: &'a Path,
+    fn urls_processed_on(
+        output_path: &'a Path,
     ) -> HashMap<String, HashMap<&'static str, Option<String>>> {
         let mut processed_urls = HashMap::new();
 
-        if out_path.exists() {
-            if let Some(mut reader) = csv::Reader::from_path(out_path).ok() {
+        if output_path.exists() {
+            if let Some(mut reader) = csv::Reader::from_path(output_path).ok() {
                 for row in reader.deserialize() {
                     if row.is_err() {
                         continue;
@@ -129,16 +132,21 @@ impl<'a> TitleGrabber<'a> {
 
                     let r: CsvRow = row.unwrap();
                     if r.page_title.is_some() || r.article_title.is_some() {
-                        let val = [
-                            (END_URL_HEAD, Some(r.end_url)),
-                            (PAGE_TIT_HEAD, r.page_title),
-                            (ART_TIT_HEAD, r.article_title),
-                        ]
-                        .iter()
-                        .cloned()
-                        .collect();
+                        let mut url_data = HashMap::with_capacity(3);
+                        url_data.insert(END_URL_HEAD, Some(r.end_url));
+                        url_data.insert(PAGE_TIT_HEAD, r.page_title);
+                        url_data.insert(ART_TIT_HEAD, r.article_title);
 
-                        processed_urls.insert(r.url, val);
+                        // let url_data = [
+                        //     (END_URL_HEAD, Some(r.end_url)),
+                        //     (PAGE_TIT_HEAD, r.page_title),
+                        //     (ART_TIT_HEAD, r.article_title),
+                        // ]
+                        // .iter()
+                        // .cloned()
+                        // .collect();
+
+                        processed_urls.insert(r.url, url_data);
                     }
                 }
             }
@@ -183,9 +191,9 @@ impl<'a> TitleGrabber<'a> {
 
             if will_retry {
                 if let Some(status) = err.status() {
-                    warn!("GET {} [code: {}] - Retry: {}", url, status, retries);
+                    warn!("GET {} {} - Retry: {}", url, status, retries);
                 } else {
-                    warn!("GET {} [err: {}] - Retry: {}", url, err, retries);
+                    warn!("GET {} Err: {} - Retry: {}", url, err, retries);
                 }
 
                 thread::sleep(Duration::from_secs(retries));
@@ -230,7 +238,7 @@ impl<'a> TitleGrabber<'a> {
                             }
                         }
 
-                        let _ = ret.replace(CsvRow {
+                        ret.replace(CsvRow {
                             url: url,
                             end_url: end_url.to_owned(),
                             page_title: page_tit,
@@ -248,12 +256,12 @@ impl<'a> TitleGrabber<'a> {
             }
         };
 
-        let _ = tx.send(ret);
+        let _res = tx.send(ret);
     }
 
     pub fn write_csv_to(&self) -> Result<(), Box<Error>> {
         let http_client = Arc::new(self.build_http_client());
-        let mut writer = csv::Writer::from_path(self.out_path)?;
+        let mut writer = csv::Writer::from_path(self.output_path)?;
         let mut pool = Pool::new(self.max_threads as u32);
         let work_queue = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = mpsc::channel();
