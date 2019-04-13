@@ -28,19 +28,19 @@
 
     OPTIONS:
             --connect-timeout <connect-timeout>    HTTP connect timeout. Defaults to the value of the CONNECT_TIMEOUT env
-                                                  var or 10 [env: CONNECT_TIMEOUT=]  [default: 10]
+                                                   var or 10 [env: CONNECT_TIMEOUT=]  [default: 10]
         -d, --debug <debug>                        Log to STDOUT instead of to a file in the CWD.  Defaults to the value of
-                                                  the DEBUG env var or False [env: DEBUG=]
+                                                   the DEBUG env var or False [env: DEBUG=]
             --max-redirects <max-redirects>        Max. # of HTTP redirects to follow. Defaults to the value of the
-                                                  MAX_REDIRECTS env var or 5 [env: MAX_REDIRECTS=]  [default: 5]
+                                                   MAX_REDIRECTS env var or 5 [env: MAX_REDIRECTS=]  [default: 5]
         -r <max-retries>                           Max. # of times to retry failed HTTP reqs. Defaults to the value of the
-                                                  MAX_RETRIES env var or 3 [env: MAX_RETRIES=]  [default: 3]
+                                                   MAX_RETRIES env var or 3 [env: MAX_RETRIES=]  [default: 3]
         -t <max-threads>                           Max. # of threads to use. Defaults to the value of the MAX_THREADS env
-                                                  var or the # of logical processors in the system (8) [env: MAX_THREADS=]
-                                                  [default: 8]
+                                                   var or the # of logical processors in the system (8) [env: MAX_THREADS=]
+                                                   [default: 8]
         -o, --output <output>                      Output file (defaults to out.csv)
             --read-timeout <read-timeout>          HTTP read timeout. Defaults to the value of the READ_TIMEOUT env var or
-                                                  15 [env: READ_TIMEOUT=]  [default: 15]
+                                                   15 [env: READ_TIMEOUT=]  [default: 15]
 
     ARGS:
         <files>...    1 or more CSV files containing URLs (1 per line)
