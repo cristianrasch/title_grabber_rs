@@ -44,3 +44,8 @@
 
     ARGS:
         <files>...    1 or more CSV files containing URLs (1 per line)
+
+### TODO
+
+1. Add tests
+2. Replace simplelog with log4rs in order to log in local time
