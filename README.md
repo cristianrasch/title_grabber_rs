@@ -47,5 +47,4 @@
 
 ### TODO
 
-1. Add tests
-2. Replace simplelog with log4rs in order to log in local time
+1. Replace simplelog with log4rs in order to log in local time

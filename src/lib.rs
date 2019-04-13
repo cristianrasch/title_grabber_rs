@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
@@ -23,7 +24,7 @@ use scoped_threadpool::Pool;
 use scraper::{Html, Selector};
 use simplelog::*;
 
-pub const DEF_OUT_PATH: &str = "out.csv";
+pub const DEF_OUT_PATH: &str = "output.csv";
 pub const CONN_TO: u64 = 10;
 pub const READ_TO: u64 = 15;
 pub const MAX_REDIRECTS: usize = 5;
@@ -69,19 +70,21 @@ impl<'a> TitleGrabber<'a> {
         output_path: &'a Path,
         debugging_enabled: bool,
     ) -> TitleGrabber<'a> {
-        let log_config = Config {
-            time_format: Some("%F %T"),
-            ..Config::default()
-        };
-        let log_level = if debugging_enabled {
-            LevelFilter::Debug
-        } else {
-            LevelFilter::Info
-        };
-        if let Ok(log_file) = File::create("title_grabber.log") {
-            WriteLogger::init(log_level, log_config, log_file).unwrap();
-        } else {
-            TermLogger::init(log_level, log_config).unwrap();
+        if env::var("TESTING").is_err() {
+            let log_config = Config {
+                time_format: Some("%F %T"),
+                ..Config::default()
+            };
+            let log_level = if debugging_enabled {
+                LevelFilter::Debug
+            } else {
+                LevelFilter::Info
+            };
+            if let Ok(log_file) = File::create("title_grabber.log") {
+                WriteLogger::init(log_level, log_config, log_file).unwrap();
+            } else {
+                TermLogger::init(log_level, log_config).unwrap();
+            }
         }
 
         Self {
@@ -251,7 +254,7 @@ impl<'a> TitleGrabber<'a> {
         let _res = tx.send(ret);
     }
 
-    pub fn write_csv_to(&self) -> Result<(), Box<Error>> {
+    pub fn write_csv_file(&self) -> Result<(), Box<Error>> {
         let processed_urls = self.processed_urls();
         let http_client = Arc::new(self.build_http_client());
         let mut writer = csv::Writer::from_path(self.output_path)?;
@@ -312,5 +315,140 @@ impl<'a> TitleGrabber<'a> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    const TEST_OUT_PATH: &str = "tests/fixtures/out.csv";
+
+    #[test]
+    fn it_cleans_up_whitespace() {
+        assert_eq!("1 2 3".to_string(), fix_whitespace("  1\n2 \t3 ".to_string()));
+    }
+
+    #[test]
+    fn it_builds_a_new_instance_with_defaults() {
+        let instance = TitleGrabber::new(vec![], Path::new(DEF_OUT_PATH), false);
+
+        assert_eq!(0, instance.files.len());
+        assert_eq!(Some(DEF_OUT_PATH), instance.output_path.to_str());
+        assert_eq!(CONN_TO, instance.connect_timeout);
+        assert_eq!(READ_TO, instance.read_timeout);
+        assert_eq!(MAX_REDIRECTS, instance.max_redirects);
+        assert_eq!(MAX_RETRIES, instance.max_retries);
+        assert_eq!(num_cpus::get(), instance.max_threads);
+    }
+
+    #[test]
+    fn it_allows_tweaking_its_conn_to() {
+        env::set_var("TESTING", "1");
+        let mut instance = TitleGrabber::new(vec![], Path::new(DEF_OUT_PATH), false);
+        let timeout = 5;
+
+        instance.with_connect_timeout(timeout);
+
+        assert_eq!(timeout, instance.connect_timeout);
+    }
+
+    #[test]
+    fn it_allows_tweaking_its_read_to() {
+        env::set_var("TESTING", "1");
+        let mut instance = TitleGrabber::new(vec![], Path::new(DEF_OUT_PATH), false);
+        let timeout = 5;
+
+        instance.with_read_timeout(timeout);
+
+        assert_eq!(timeout, instance.read_timeout);
+    }
+
+    #[test]
+    fn it_allows_tweaking_its_max_redirs() {
+        env::set_var("TESTING", "1");
+        let mut instance = TitleGrabber::new(vec![], Path::new(DEF_OUT_PATH), false);
+        let redirects = 3;
+
+        instance.with_max_redirects(redirects);
+
+        assert_eq!(redirects, instance.max_redirects);
+    }
+
+    #[test]
+    fn it_allows_tweaking_its_max_threads() {
+        env::set_var("TESTING", "1");
+        let mut instance = TitleGrabber::new(vec![], Path::new(DEF_OUT_PATH), false);
+        let threads = 4;
+
+        instance.with_max_threads(threads);
+
+        assert_eq!(threads, instance.max_threads);
+    }
+
+    #[test]
+    fn it_does_not_panic_on_file_not_found() {
+        env::set_var("TESTING", "1");
+        let inputs = vec![Path::new("tests/fixtures/does-not-exist.txt")];
+        let out_path = Path::new(TEST_OUT_PATH);
+        let instance = TitleGrabber::new(inputs, out_path, false);
+
+        assert!(instance.write_csv_file().is_ok());
+
+        assert!(out_path.exists());
+        assert!(out_path.is_file());
+        let mut out_f = File::open(out_path).expect(&format!("Unable to open output path '{}'", out_path.display()));
+        let mut out_str = String::new();
+        out_f.read_to_string(&mut out_str).expect(&format!("Unable to read from '{}'", out_path.display()));
+        assert!(out_str.is_empty());
+        assert!(fs::remove_file(out_path).is_ok());
+    }
+
+    #[test]
+    fn it_skips_over_invalid_urls_in_inputs_files() {
+        env::set_var("TESTING", "1");
+        let inputs = vec![Path::new("tests/fixtures/invalid.txt")];
+        let out_path = Path::new("tests/fixtures/output.csv");
+        // let out_path = Path::new(TEST_OUT_PATH);
+        let instance = TitleGrabber::new(inputs, out_path, false);
+
+        assert!(instance.write_csv_file().is_ok());
+
+        assert!(out_path.exists());
+        assert!(out_path.is_file());
+        let mut out_f = File::open(out_path).expect(&format!("Unable to open output path '{}'", out_path.display()));
+        let mut out_str = String::new();
+        out_f.read_to_string(&mut out_str).expect(&format!("Unable to read from '{}'", out_path.display()));
+        assert!(out_str.is_empty());
+        assert!(fs::remove_file(out_path).is_ok());
+    }
+
+    #[test]
+    fn it_works() {
+        env::set_var("TESTING", "1");
+        let inputs = vec![Path::new("tests/fixtures/urls.txt")];
+        let out_path = Path::new("tests/fixtures/result.csv");
+        // let out_path = Path::new(TEST_OUT_PATH);
+        let mut instance = TitleGrabber::new(inputs, out_path, false);
+        instance.with_read_timeout(1);
+        instance.with_max_redirects(1);
+
+        assert!(instance.write_csv_file().is_ok());
+
+        assert!(out_path.exists());
+        assert!(out_path.is_file());
+        let mut reader = csv::Reader::from_path(out_path).expect(&format!("Unable to read out CSV '{}'", out_path.display()));
+        let mut iter = reader.records();
+        let row = iter.next().expect(&format!("Output CSV '{}' should've have exactly 1 record", out_path.display()));
+        let r = row.expect(&format!("Unable to read first row from output CSV '{}'", out_path.display()));
+        let url = Some("https://www.jaylen.com.ar/");
+        assert_eq!(url, r.get(0));
+        let end_url = url;
+        assert_eq!(end_url, r.get(1));
+        assert_eq!(Some("Jaylen Informática"), r.get(2));
+        assert_eq!(Some("Productos"), r.get(3));
+        assert!(iter.next().is_none());
+        assert!(fs::remove_file(out_path).is_ok());
     }
 }

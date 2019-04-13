@@ -135,7 +135,7 @@ fn main() {
             .unwrap_or(*NUM_CPUS);
         instance.with_max_threads(max_threads);
 
-        if let Some(err) = instance.write_csv_to().err() {
+        if let Some(err) = instance.write_csv_file().err() {
             eprintln!("Error: {}", err.description());
         }
     } else {
