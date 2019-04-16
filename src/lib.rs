@@ -10,6 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use csv;
+use flexi_logger::{Duplicate, Logger, detailed_format};
 use itertools;
 #[macro_use]
 extern crate lazy_static;
@@ -22,7 +23,6 @@ use reqwest;
 extern crate serde_derive;
 use scoped_threadpool::Pool;
 use scraper::{Html, Selector};
-use simplelog::*;
 
 pub const DEF_OUT_PATH: &str = "output.csv";
 pub const CONN_TO: u64 = 10;
@@ -71,20 +71,16 @@ impl<'a> TitleGrabber<'a> {
         debugging_enabled: bool,
     ) -> TitleGrabber<'a> {
         if env::var("TESTING").is_err() {
-            let log_config = Config {
-                time_format: Some("%F %T"),
-                ..Config::default()
-            };
-            let log_level = if debugging_enabled {
-                LevelFilter::Debug
-            } else {
-                LevelFilter::Info
-            };
-            if let Ok(log_file) = File::create("title_grabber.log") {
-                WriteLogger::init(log_level, log_config, log_file).unwrap();
-            } else {
-                TermLogger::init(log_level, log_config).unwrap();
+            let log_level = if debugging_enabled { "debug" } else { "info" };
+            let mut logger = Logger::with_env_or_str(&format!("title_grabber_rs={}", log_level))
+                                    .log_to_file()
+                                    .suppress_timestamp();
+            if debugging_enabled {
+                logger = logger.duplicate_to_stderr(Duplicate::Info);
             }
+            logger.format(detailed_format)
+                  .start()
+                  .expect("Unable to open log file destination");
         }
 
         Self {
