@@ -38,6 +38,9 @@ lazy_static! {
     static ref URL_RE: Regex = Regex::new(r"https?://\S+").unwrap();
     static ref NEW_LINE_RE: Regex = Regex::new(r"\n").unwrap();
     static ref WHITESPACE_RE: Regex = Regex::new(r"\s{2,}").unwrap();
+    static ref PAGE_TIT_SEL: Selector = Selector::parse("title").unwrap();
+    static ref ART_HEAD_SEL: Selector = Selector::parse("article h1").unwrap();
+    static ref DOC_TIT_SEL: Selector = Selector::parse("h1").unwrap();
 }
 
 fn fix_whitespace(html: String) -> String {
@@ -209,20 +212,17 @@ impl<'a> TitleGrabber<'a> {
                         debug!("GET {} - {} bytes", end_url, html.len());
 
                         let doc = Html::parse_document(&html);
-                        let page_tit_sel = Selector::parse("title").unwrap();
                         let mut page_tit = None;
-                        if let Some(page_tit_el) = doc.select(&page_tit_sel).next() {
+                        if let Some(page_tit_el) = doc.select(&PAGE_TIT_SEL).next() {
                             page_tit.replace(fix_whitespace(page_tit_el.inner_html()));
                         }
 
-                        let mut art_tit_sel = Selector::parse("article h1").unwrap();
                         let mut art_tit = None;
-                        if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
+                        if let Some(art_tit_el) = doc.select(&ART_HEAD_SEL).next() {
                             art_tit
                                 .replace(fix_whitespace(itertools::join(art_tit_el.text(), " ")));
                         } else {
-                            art_tit_sel = Selector::parse("h1").unwrap();
-                            if let Some(art_tit_el) = doc.select(&art_tit_sel).next() {
+                            if let Some(art_tit_el) = doc.select(&DOC_TIT_SEL).next() {
                                 art_tit.replace(fix_whitespace(itertools::join(
                                     art_tit_el.text(),
                                     " ",
