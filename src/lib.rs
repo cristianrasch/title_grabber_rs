@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use csv;
-use flexi_logger::{Duplicate, Logger, detailed_format};
+use flexi_logger::{detailed_format, Duplicate, Logger};
 use itertools;
 #[macro_use]
 extern crate lazy_static;
@@ -73,14 +73,15 @@ impl<'a> TitleGrabber<'a> {
         if env::var("TESTING").is_err() {
             let log_level = if debugging_enabled { "debug" } else { "info" };
             let mut logger = Logger::with_env_or_str(&format!("title_grabber_rs={}", log_level))
-                                    .log_to_file()
-                                    .suppress_timestamp();
+                .log_to_file()
+                .suppress_timestamp();
             if debugging_enabled {
                 logger = logger.duplicate_to_stderr(Duplicate::Info);
             }
-            logger.format(detailed_format)
-                  .start()
-                  .expect("Unable to open log file destination");
+            logger
+                .format(detailed_format)
+                .start()
+                .expect("Unable to open log file destination");
         }
 
         Self {
@@ -323,7 +324,10 @@ mod tests {
 
     #[test]
     fn it_cleans_up_whitespace() {
-        assert_eq!("1 2 3".to_string(), fix_whitespace("  1\n2 \t3 ".to_string()));
+        assert_eq!(
+            "1 2 3".to_string(),
+            fix_whitespace("  1\n2 \t3 ".to_string())
+        );
     }
 
     #[test]
@@ -394,9 +398,14 @@ mod tests {
 
         assert!(out_path.exists());
         assert!(out_path.is_file());
-        let mut out_f = File::open(out_path).expect(&format!("Unable to open output path '{}'", out_path.display()));
+        let mut out_f = File::open(out_path).expect(&format!(
+            "Unable to open output path '{}'",
+            out_path.display()
+        ));
         let mut out_str = String::new();
-        out_f.read_to_string(&mut out_str).expect(&format!("Unable to read from '{}'", out_path.display()));
+        out_f
+            .read_to_string(&mut out_str)
+            .expect(&format!("Unable to read from '{}'", out_path.display()));
         assert!(out_str.is_empty());
         assert!(fs::remove_file(out_path).is_ok());
     }
@@ -413,9 +422,14 @@ mod tests {
 
         assert!(out_path.exists());
         assert!(out_path.is_file());
-        let mut out_f = File::open(out_path).expect(&format!("Unable to open output path '{}'", out_path.display()));
+        let mut out_f = File::open(out_path).expect(&format!(
+            "Unable to open output path '{}'",
+            out_path.display()
+        ));
         let mut out_str = String::new();
-        out_f.read_to_string(&mut out_str).expect(&format!("Unable to read from '{}'", out_path.display()));
+        out_f
+            .read_to_string(&mut out_str)
+            .expect(&format!("Unable to read from '{}'", out_path.display()));
         assert!(out_str.is_empty());
         assert!(fs::remove_file(out_path).is_ok());
     }
@@ -434,10 +448,17 @@ mod tests {
 
         assert!(out_path.exists());
         assert!(out_path.is_file());
-        let mut reader = csv::Reader::from_path(out_path).expect(&format!("Unable to read out CSV '{}'", out_path.display()));
+        let mut reader = csv::Reader::from_path(out_path)
+            .expect(&format!("Unable to read out CSV '{}'", out_path.display()));
         let mut iter = reader.records();
-        let row = iter.next().expect(&format!("Output CSV '{}' should've have exactly 1 record", out_path.display()));
-        let r = row.expect(&format!("Unable to read first row from output CSV '{}'", out_path.display()));
+        let row = iter.next().expect(&format!(
+            "Output CSV '{}' should've have exactly 1 record",
+            out_path.display()
+        ));
+        let r = row.expect(&format!(
+            "Unable to read first row from output CSV '{}'",
+            out_path.display()
+        ));
         let url = Some("https://www.jaylen.com.ar/");
         assert_eq!(url, r.get(0));
         let end_url = url;
