@@ -18,20 +18,24 @@ extern crate lazy_static;
 extern crate log;
 use num_cpus;
 use regex::Regex;
-use reqwest;
+use reqwest::{self, Url};
 #[macro_use]
 extern crate serde_derive;
 use scoped_threadpool::Pool;
 use scraper::{Html, Selector};
 
 pub const DEF_OUT_PATH: &str = "output.csv";
-pub const CONN_TO: u64 = 10;
-pub const READ_TO: u64 = 15;
+pub const CONN_TO: u64 = 30;
+pub const READ_TO: u64 = 30;
 pub const MAX_REDIRECTS: usize = 5;
 pub const MAX_RETRIES: u64 = 3;
 const END_URL_HEAD: &str = "end_url";
 const PAGE_TIT_HEAD: &str = "page_title";
 const ART_TIT_HEAD: &str = "article_title";
+const TWEET_PERMA_LINK_SEL: &str = ".tweet.permalink-tweet";
+const TWEET_TXT_SELS: [&str; 2] = [".tweet-text", "QuoteTweet"];
+const TWITTER_HOST: &str = "twitter.com";
+const CSV_FIELD_SEP: &str = ",";
 
 lazy_static! {
     pub static ref NUM_CPUS: usize = num_cpus::get();
@@ -41,6 +45,8 @@ lazy_static! {
     static ref PAGE_TIT_SEL: Selector = Selector::parse("title").unwrap();
     static ref ART_HEAD_SEL: Selector = Selector::parse("article h1").unwrap();
     static ref DOC_TIT_SEL: Selector = Selector::parse("h1").unwrap();
+    static ref TWITTER_URL_PREFIX: Url = Url::parse(&format!("https://{}", TWITTER_HOST)).unwrap();
+    static ref TWITTER_STATUS_RE: Regex = Regex::new(r"/status/\d+\z").unwrap();
 }
 
 fn fix_whitespace(html: String) -> String {
@@ -167,14 +173,9 @@ impl<'a> TitleGrabber<'a> {
             .unwrap()
     }
 
-    fn scrape_url(
-        &self,
-        url: String,
-        http_client: Arc<reqwest::Client>,
-        tx: mpsc::Sender<Option<CsvRow>>,
-    ) {
+    fn get(&self, url: &str, http_client: &Arc<reqwest::Client>) -> Option<reqwest::Response> {
         let mut retries = 0;
-        let mut res = http_client.get(&url).send();
+        let mut res = http_client.get(url).send();
 
         while let Some(err) = res.as_ref().err() {
             if retries >= self.max_retries {
@@ -194,56 +195,131 @@ impl<'a> TitleGrabber<'a> {
                 }
 
                 thread::sleep(Duration::from_secs(retries));
-                res = http_client.get(&url).send();
+                res = http_client.get(url).send();
             } else {
                 break;
             }
         }
 
-        let mut ret = None;
         match res {
             Ok(resp) => {
                 info!("GET {} - {}", url, resp.status());
-                let res = resp.error_for_status();
-
-                if let Some(mut resp) = res.ok() {
-                    if let Some(html) = resp.text().ok() {
-                        let end_url = resp.url().as_str();
-                        debug!("GET {} - {} bytes", end_url, html.len());
-
-                        let doc = Html::parse_document(&html);
-                        let mut page_tit = None;
-                        if let Some(page_tit_el) = doc.select(&PAGE_TIT_SEL).next() {
-                            page_tit.replace(fix_whitespace(page_tit_el.inner_html()));
-                        }
-
-                        let mut art_tit = None;
-                        if let Some(art_tit_el) = doc.select(&ART_HEAD_SEL).next() {
-                            art_tit
-                                .replace(fix_whitespace(itertools::join(art_tit_el.text(), " ")));
-                        } else {
-                            if let Some(art_tit_el) = doc.select(&DOC_TIT_SEL).next() {
-                                art_tit.replace(fix_whitespace(itertools::join(
-                                    art_tit_el.text(),
-                                    " ",
-                                )));
-                            }
-                        }
-
-                        ret.replace(CsvRow {
-                            url: url,
-                            end_url: end_url.to_owned(),
-                            page_title: page_tit,
-                            article_title: art_tit,
-                        });
-                    }
-                }
+                Some(resp)
             }
             Err(err) => {
                 if let Some(status) = err.status() {
                     error!("GET {} {} - Retry: {}", url, status, retries);
                 } else {
                     error!("GET {} Err: {} - Retry: {}", url, err, retries);
+                }
+
+                None
+            }
+        }
+    }
+
+    fn scrape_url(
+        &self,
+        url: String,
+        http_client: Arc<reqwest::Client>,
+        tx: mpsc::Sender<Option<CsvRow>>,
+    ) {
+        let mut ret = None;
+
+        if let Some(resp) = self.get(&url, &http_client) {
+            let res = resp.error_for_status();
+
+            if let Some(mut resp) = res.ok() {
+                if let Some(html) = resp.text().ok() {
+                    let mut end_url = resp.url().clone().into_string();
+                    debug!("GET {} - {} bytes", end_url, html.len());
+
+                    let doc = Html::parse_document(&html);
+
+                    let mut tweet_urls = vec![];
+                    for tweet_txt_sel in TWEET_TXT_SELS.iter() {
+                        let css_sel_str = format!("{} {} a", TWEET_PERMA_LINK_SEL, tweet_txt_sel);
+                        let css_sel = Selector::parse(&css_sel_str).unwrap();
+                        let mut links = doc
+                            .select(&css_sel)
+                            .filter_map(|a| a.value().attr("href"))
+                            .collect();
+                        tweet_urls.append(&mut links);
+                    }
+                    tweet_urls.retain(|&url| !url.is_empty());
+                    tweet_urls.sort_unstable();
+                    tweet_urls.dedup_by_key(|url| *url);
+                    let tweet_urls = tweet_urls.into_iter().filter_map(|url| {
+                        let mut ret = Some(url.to_owned());
+
+                        if URL_RE.is_match(url) {
+                            if let Some(resp) = self.get(url, &http_client) {
+                                let end_url = resp.url();
+                                let _opt = ret.replace(end_url.clone().into_string());
+
+                                if let Some(host) = end_url.host_str() {
+                                    if host == TWITTER_HOST {
+                                        if !TWITTER_STATUS_RE.is_match(end_url.as_str()) {
+                                            let _opt = ret.take();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ret
+                    });
+                    let tweet_urls = tweet_urls.filter_map(|url| {
+                        if url.starts_with("/") {
+                            TWITTER_URL_PREFIX.join(&url).ok()
+                        } else {
+                            Url::parse(&url).ok()
+                        }
+                    });
+                    let tweet_urls = tweet_urls.filter_map(|url| {
+                        let mut ret = Some(url.clone().into_string());
+
+                        if let Some(host) = url.host_str() {
+                            if host == TWITTER_HOST {
+                                let fwd_slash_cnt =
+                                    url.path().chars().filter(|&c| c == '/').count();
+                                if fwd_slash_cnt > 1 {
+                                    if !TWITTER_STATUS_RE.is_match(url.as_str()) {
+                                        let _opt = ret.take();
+                                    }
+                                }
+                            }
+                        }
+
+                        ret
+                    });
+                    let mut tweet_urls: std::vec::Vec<_> = tweet_urls.collect();
+                    tweet_urls.sort_unstable();
+                    if !tweet_urls.is_empty() {
+                        end_url = itertools::join(tweet_urls.into_iter(), CSV_FIELD_SEP);
+                    }
+
+                    let mut page_tit = None;
+                    if let Some(page_tit_el) = doc.select(&PAGE_TIT_SEL).next() {
+                        page_tit.replace(fix_whitespace(page_tit_el.inner_html()));
+                    }
+
+                    let mut art_tit = None;
+                    if let Some(art_tit_el) = doc.select(&ART_HEAD_SEL).next() {
+                        art_tit.replace(fix_whitespace(itertools::join(art_tit_el.text(), " ")));
+                    } else {
+                        if let Some(art_tit_el) = doc.select(&DOC_TIT_SEL).next() {
+                            art_tit
+                                .replace(fix_whitespace(itertools::join(art_tit_el.text(), " ")));
+                        }
+                    }
+
+                    ret.replace(CsvRow {
+                        url: url,
+                        end_url: end_url.to_owned(),
+                        page_title: page_tit,
+                        article_title: art_tit,
+                    });
                 }
             }
         };
