@@ -44,3 +44,17 @@
 
     ARGS:
         <files>...    1 or more CSV files containing URLs (1 per line)
+
+### Cross-compilation for usage on Windows
+
+`sudo apt-get install -y gcc-mingw-w64-x86-64`
+
+`rustup target add x86_64-pc-windows-gnu`
+
+    cat << EOF > ~/.cargo/config
+    [target.x86_64-pc-windows-gnu]
+    linker = "x86_64-w64-mingw32-gcc"
+    ar = "x86_64-w64-mingw32-gcc-ar"
+    EOF
+
+`cargo build --target=x86_64-pc-windows-gnu --release`
