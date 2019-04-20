@@ -33,7 +33,6 @@ const END_URL_HEAD: &str = "end_url";
 const PAGE_TIT_HEAD: &str = "page_title";
 const ART_TIT_HEAD: &str = "article_title";
 const TWEET_PERMA_LINK_SEL: &str = ".tweet.permalink-tweet";
-const TWEET_TXT_SELS: [&str; 2] = [".tweet-text", "QuoteTweet"];
 const TWITTER_HOST: &str = "twitter.com";
 const CSV_FIELD_SEP: &str = ",";
 
@@ -47,6 +46,13 @@ lazy_static! {
     static ref DOC_TIT_SEL: Selector = Selector::parse("h1").unwrap();
     static ref TWITTER_URL_PREFIX: Url = Url::parse(&format!("https://{}", TWITTER_HOST)).unwrap();
     static ref TWITTER_STATUS_RE: Regex = Regex::new(r"/status/\d+\z").unwrap();
+    static ref TWEET_TXT_SELS: Vec<Selector> = [".tweet-text", "QuoteTweet"]
+        .iter()
+        .filter_map(|tweet_txt_sel| {
+            let css_sel_str = format!("{} {} a", TWEET_PERMA_LINK_SEL, tweet_txt_sel);
+            Selector::parse(&css_sel_str).ok()
+        })
+        .collect();
 }
 
 fn fix_whitespace(html: String) -> String {
@@ -220,16 +226,11 @@ impl<'a> TitleGrabber<'a> {
 
     fn parse_end_url_from(&self, doc: &Html, http_client: &Arc<reqwest::Client>) -> Option<String> {
         let mut ret = None;
-        let mut tweet_urls = vec![];
-        for tweet_txt_sel in &TWEET_TXT_SELS {
-            let css_sel_str = format!("{} {} a", TWEET_PERMA_LINK_SEL, tweet_txt_sel);
-            let css_sel = Selector::parse(&css_sel_str).unwrap();
-            let mut links = doc
-                .select(&css_sel)
-                .filter_map(|a| a.value().attr("href"))
-                .collect();
-            tweet_urls.append(&mut links);
-        }
+
+        let mut tweet_urls: Vec<_> = TWEET_TXT_SELS
+            .iter()
+            .flat_map(|css_sel| doc.select(&css_sel).filter_map(|a| a.value().attr("href")))
+            .collect();
         tweet_urls.retain(|&url| !url.is_empty());
         tweet_urls.sort_unstable();
         tweet_urls.dedup_by_key(|url| *url);
